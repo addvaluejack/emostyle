@@ -28,8 +28,7 @@ from losses import *
 from skimage import draw
 import glob
 
-is_cuda = torch.cuda.is_available()
-device = 'cuda' if is_cuda else 'cpu'
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 EMO_EMBED = 64
 STG_EMBED = 512
 INPUT_SIZE = 1024
@@ -60,13 +59,16 @@ def test(
     emonet.load_state_dict(ckpt_emo, strict=False)
     emonet.eval()
     
-    ckpt_emo_mapping = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-    emo_mapping = EmoMappingW(EMO_EMBED, STG_EMBED)
+    ckpt_emo_mapping = torch.load(checkpoint_path)
+    if wplus:
+        emo_mapping = EmoMappingWplus(INPUT_SIZE, EMO_EMBED, STG_EMBED)    
+    else:
+        emo_mapping = EmoMappingW(EMO_EMBED, STG_EMBED)
     emo_mapping.load_state_dict(ckpt_emo_mapping['emo_mapping_state_dict'])
     emo_mapping.eval()
     
 
-    if is_cuda:
+    if torch.cuda.is_available():
         emo_mapping.cuda()
         stylegan.cuda()
         emonet.cuda()
@@ -86,24 +88,19 @@ def test(
                 image_latent = np.expand_dims(image_latent[:, :], 0)
             else:
                 image_latent = np.expand_dims(image_latent[0, :], 0)
-            image_latent = torch.from_numpy(image_latent).float()
+            image_latent = torch.from_numpy(image_latent).float().to(device)
             latents[image_path] = image_latent
             
     elif test_mode == 'folder_images':
-        for image_file in glob.glob(image_path):
+        for image_file in [images_path+filename for filename in os.listdir(images_path) if filename.endswith('.png')]:
             latent_path = os.path.splitext(image_file)[0]+'.npy'
             image_latent = np.load(latent_path, allow_pickle=False)
             if wplus:
                 image_latent = np.expand_dims(image_latent[:, :], 0)
             else:
                 image_latent = np.expand_dims(image_latent[0, :], 0)
-            image_latent = torch.from_numpy(image_latent).float()
+            image_latent = torch.from_numpy(image_latent).float().to(device)
             latents[image_file] = image_latent
-            
-    emos_data = {}
-    for v in range(len(valence)):
-        for a in range(len(arousal)):
-            emos_data[(valence[v], arousal[a])] = []
         
     num_images = len(valence) * len(arousal)
     for img, latent in latents.items():
@@ -114,10 +111,9 @@ def test(
         plt.subplots_adjust(left=.05, right=.95, wspace=0, hspace=0)
         iter = 0
         
-        image_tensors = []
         for v_idx in tqdm(range(len(valence))):
             for a_idx in range(len(arousal)):
-                emotion = torch.FloatTensor([valence[v_idx], arousal[a_idx]]).float().unsqueeze_(0)
+                emotion = torch.FloatTensor([valence[v_idx], arousal[a_idx]]).float().unsqueeze_(0).to(device)
                 fake_latents = latent + emo_mapping(latent, emotion)
                 generated_image_tensor = stylegan.generate(fake_latents)
                 generated_image_tensor = (generated_image_tensor + 1.) / 2.
@@ -128,9 +124,6 @@ def test(
                 generated_image = np.clip(generated_image*255, 0, 255).astype(np.int32)
                 generated_image = generated_image.transpose(1, 2, 0).astype(np.uint8)
 
-                emos_data[(valence[v_idx], arousal[a_idx])].append(abs(emos[0] - valence[v_idx]), abs(emos[1] - arousal[a_idx]))
-                image_tensors.append(generated_image_tensor) 
-
                 ax_g[iter].imshow(generated_image)
                 ax_g[iter].set_title("V: p{:.2f}, r{:.2f}, A: p{:.2f}, r{:.2f}".format(valence[v_idx], emos[0], arousal[a_idx], emos[1]), fontsize=40)
                 ax_g[iter].axis('off')
@@ -140,8 +133,6 @@ def test(
     
         fig = plt.figure(figsize=(80, 20))
         
-        with open('emos_data.pkl', 'wb') as f:
-            pickle.dump(emos_data, f)
         output_image = Image.open("result.png").convert('RGB')
         grid = plt.GridSpec(1, num_images+1, wspace=0.05, hspace=0)
         ax_output = fig.add_subplot(grid[0, 1:])

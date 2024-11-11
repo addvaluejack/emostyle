@@ -1,3 +1,8 @@
 /dataset/
 /pretrained/
 /__pycache__/
+/logs/
+/checkpoints/
+/inputs/
+/outputs/
+*.pyc
